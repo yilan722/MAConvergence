@@ -42,8 +42,8 @@ def check_signal_generic(ticker, main_fetch_func, trend_fetch_func):
             'ema_fast': 'trend_ema_fast',
             'ema_slow': 'trend_ema_slow'
         }))
-        main_df['trend_ema_fast'].ffill(inplace=True)
-        main_df['trend_ema_slow'].ffill(inplace=True)
+        main_df['trend_ema_fast'] = main_df['trend_ema_fast'].ffill()
+        main_df['trend_ema_slow'] = main_df['trend_ema_slow'].ffill()
         
         main_df.ta.bbands(length=bb_length, std=bb_mult, append=True, col_names=(f'BBL_{bb_length}_{bb_mult}', f'BBM_{bb_length}_{bb_mult}', f'BBU_{bb_length}_{bb_mult}', f'BBB_{bb_length}_{bb_mult}', f'BBP_{bb_length}_{bb_mult}'))
         main_df['ema_fast'] = ta.ema(main_df['close'], length=ema_fast_length)
