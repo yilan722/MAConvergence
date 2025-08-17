@@ -1,4 +1,9 @@
-yfinance
+# requirements.txt
+python-dotenv
 pandas
-ta
-requests
+pandas-ta         # 强大的技术分析指标库，核心！
+yfinance          # 免费的美股/港股数据源
+tushare           # 免费的A股数据源 (需要注册获取token)
+python-telegram-bot==13.7 # 用于Telegram通讯
+schedule          # 简单好用的任务调度库
+configparser      # 用于读取配置文件
