@@ -1,63 +1,106 @@
-# main.py
+# main.py (V4.4 - Final & Complete with Warning Suppression)
+import warnings
+# 忽略所有 FutureWarning，让日志更干净
+warnings.simplefilter(action='ignore', category=FutureWarning)
+
 import schedule
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from dotenv import load_dotenv
 import configparser
-# 导入两个检查函数
-from scanner import run_market_scan, check_stock_signal, check_crypto_signal
+import os
+from pathlib import Path
+
+# --- 健壮的 .env 加载与验证 ---
+script_dir = Path(__file__).resolve().parent
+print(f"👋 Script directory is: {script_dir}")
+
+dotenv_path = script_dir / '.env'
+load_dotenv(dotenv_path=dotenv_path)
+
+tushare_token_loaded = os.getenv('TUSHARE_TOKEN')
+if tushare_token_loaded:
+    print("✅ Tushare token loaded successfully from .env file.")
+else:
+    print("⚠️  Warning: Tushare token NOT found in environment variables.")
+# --- 加载完成 ---
+
+from scanner import scan_markets_for_last_signal
 from telegram_bot import send_telegram_message
 
 def job():
-    """定义需要定时执行的核心任务"""
     print(f"\n🚀 Starting new scan job at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     
     config = configparser.ConfigParser()
     config.read('config.ini')
     
-    # 扫描不同市场的股票
-    us_signals = run_market_scan(config['MARKETS']['us_stocks_path'], check_stock_signal)
-    hk_signals = run_market_scan(config['MARKETS']['hk_stocks_path'], check_stock_signal)
+    recency_days = int(config['REPORTING']['RECENCY_DAYS'])
     
-    # --- 新增：扫描加密货币市场 ---
-    crypto_signals = run_market_scan(config['MARKETS']['crypto_symbols_path'], check_crypto_signal)
+    us_signals = scan_markets_for_last_signal(config['MARKETS']['us_stocks_path'], 'stock')
+    hk_signals = scan_markets_for_last_signal(config['MARKETS']['hk_stocks_path'], 'stock')
+    cn_signals = scan_markets_for_last_signal(config['MARKETS']['cn_stocks_path'], 'cn_stock')
+    crypto_signals = scan_markets_for_last_signal(config['MARKETS']['crypto_symbols_path'], 'crypto')
     
-    # 格式化消息并发送
-    today_str = datetime.now().strftime('%Y-%m-%d')
-    message = f"*📈 Universal MTF 策略信号 - {today_str}*\n\n"
+    today = datetime.now()
+    cutoff_date = today - timedelta(days=recency_days)
+    
+    message = f"*📈 最近{recency_days}天内的买入信号*\n_{today.strftime('%Y-%m-%d %H:%M:%S')}_\n\n"
+    
+    def filter_and_sort_signals(signals_dict):
+        recent_signals = {
+            ticker: date_str for ticker, date_str in signals_dict.items()
+            if datetime.strptime(date_str, '%Y-%m-%d') >= cutoff_date
+        }
+        return sorted(recent_signals.items(), key=lambda item: item[1], reverse=True)
+
+    us_sorted = filter_and_sort_signals(us_signals)
+    hk_sorted = filter_and_sort_signals(hk_signals)
+    cn_sorted = filter_and_sort_signals(cn_signals)
+    crypto_sorted = filter_and_sort_signals(crypto_signals)
     
     has_signal = False
-    if us_signals:
-        message += "*🇺🇸 美股买入信号:*\n`" + "`, `".join(us_signals) + "`\n\n"
+    if us_sorted:
+        message += "*🇺🇸 美股信号:*\n"
+        for ticker, date in us_sorted:
+            message += f"`{ticker:<8}` | {date}\n"
+        message += "\n"
         has_signal = True
     
-    if hk_signals:
-        message += "*🇭🇰 港股买入信号:*\n`" + "`, `".join(hk_signals) + "`\n\n"
+    if hk_sorted:
+        message += "*🇭🇰 港股信号:*\n"
+        for ticker, date in hk_sorted:
+            message += f"`{ticker:<8}` | {date}\n"
+        message += "\n"
         has_signal = True
         
-    if crypto_signals:
-        message += "*₿ 加密货币买入信号:*\n`" + "`, `".join(crypto_signals) + "`\n\n"
+    if cn_sorted:
+        message += "*🇨🇳 A股信号:*\n"
+        for ticker, date in cn_sorted:
+            message += f"`{ticker:<10}` | {date}\n"
+        message += "\n"
+        has_signal = True
+        
+    if crypto_sorted:
+        message += "*₿ 加密货币信号:*\n"
+        for ticker, date in crypto_sorted:
+            message += f"`{ticker:<10}` | {date}\n"
+        message += "\n"
         has_signal = True
         
     if not has_signal:
-        message += "今日无任何市场触发买入信号。"
+        message += f"最近{recency_days}天内无任何市场触发买入信号。"
         
     send_telegram_message(message)
     print(f"✅ Scan job finished at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
-# ... (main 函数和 if __name__ == "__main__": 部分保持不变) ...
+
 def main():
-    load_dotenv()
-    
-    print("--- 🤖 Trading Signal Scanner Initialized ---")
+    print("--- 🤖 Advanced Signal Scanner (All Markets) Initialized ---")
     print("Scheduler is running. Waiting for the scheduled time to run the job.")
     print("Press Ctrl+C to exit.")
 
-    # 调度任务
     schedule.every().day.at("17:00").do(job)
-
-    # 方便测试：立即运行一次
-    job() 
+    job()
 
     while True:
         schedule.run_pending()

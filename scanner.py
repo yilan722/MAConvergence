@@ -1,110 +1,94 @@
-# scanner.py
+# scanner.py (V4.1 - Fixed NameError)
 import pandas as pd
 import pandas_ta as ta
 import configparser
-# 我们现在从这里导入所有数据获取函数
-from data_fetcher import get_yfinance_data, get_binance_data
+# --- 关键修改：在这里导入 pro ---
+from data_fetcher import get_yfinance_data, get_binance_data, get_tushare_data, pro
+from datetime import datetime, timedelta
 
-# --- 辅助函数：复现Pine Script的crossover (不变) ---
+# --- 辅助函数：复现Pine Script的crossover ---
 def crossover(series1, series2):
-    return (series1.shift(1) < series2.shift(1)) & (series1 > series2)
+    s1 = pd.Series(series1)
+    s2 = pd.Series(series2)
+    return (s1.shift(1) < s2.shift(1)) & (s1 > s2)
 
-# --- 这是重构后的通用信号检查函数 ---
-def check_signal_generic(ticker, main_fetch_func, trend_fetch_func):
-    """
-    通用的信号检查逻辑，可以处理任何来源的数据。
-    """
+# --- 核心策略函数：寻找最后一次买入信号的日期 ---
+def find_last_buy_signal_date(ticker, data_fetch_func):
+    # ... (这个函数本身无需修改) ...
     try:
-        config = configparser.ConfigParser()
-        config.read('config.ini')
-        params = config['STRATEGY']
+        if data_fetch_func.__name__ == 'get_yfinance_data':
+            df = data_fetch_func(ticker, period="3y", interval="1d")
+        else:
+            df = data_fetch_func(ticker)
+
+        if df.empty or len(df) < 250:
+            return None
+            
+        # ... (后续计算逻辑完全不变) ...
+        df['LT_EMA30'] = ta.ema(df['close'], length=30)
+        df['LT_EMA60'] = ta.ema(df['close'], length=60)
+        df['LT_EMA90'] = ta.ema(df['close'], length=90)
+        df['LT_MA200'] = ta.sma(df['close'], length=200)
+        df['ST_EMA21'] = ta.ema(df['close'], length=21)
+        df['ST_EMA30'] = ta.ema(df['close'], length=30)
+        df['ST_MA34'] = ta.sma(df['close'], length=34)
+        df.dropna(inplace=True)
+        if df.empty: return None
+
+        long_term_mas = df[['LT_EMA30', 'LT_EMA60', 'LT_EMA90', 'LT_MA200']]
+        df['long_cv'] = long_term_mas.std(axis=1) / long_term_mas.mean(axis=1)
+        ma200_slope_val = ta.slope(df['LT_MA200'], length=10)
+        df['slope_ma200'] = ma200_slope_val / df['LT_MA200']
         
-        bb_length = int(params['bb_length'])
-        bb_mult = float(params['bb_mult'])
-        ema_fast_length = int(params['ema_fast_length'])
-        ema_slow_length = int(params['ema_slow_length'])
-
-        # 2. 使用传入的函数获取数据
-        main_df = main_fetch_func(ticker)
-        if main_df.empty or len(main_df) < bb_length:
-            return False
-
-        trend_df = trend_fetch_func(ticker)
-        if trend_df.empty:
-            return False
-
-        # 3. 计算指标 (逻辑完全不变)
-        trend_df['ema_fast'] = ta.ema(trend_df['close'], length=ema_fast_length)
-        trend_df['ema_slow'] = ta.ema(trend_df['close'], length=ema_slow_length)
+        condition1 = (df['long_cv'] < 0.02) & (df['slope_ma200'] > -0.001)
         
-        # 将趋势数据合并到主周期
-        main_df = main_df.join(trend_df[['ema_fast', 'ema_slow']].rename(columns={
-            'ema_fast': 'trend_ema_fast',
-            'ema_slow': 'trend_ema_slow'
-        }))
-        main_df['trend_ema_fast'] = main_df['trend_ema_fast'].ffill()
-        main_df['trend_ema_slow'] = main_df['trend_ema_slow'].ffill()
-        
-        main_df.ta.bbands(length=bb_length, std=bb_mult, append=True, col_names=(f'BBL_{bb_length}_{bb_mult}', f'BBM_{bb_length}_{bb_mult}', f'BBU_{bb_length}_{bb_mult}', f'BBB_{bb_length}_{bb_mult}', f'BBP_{bb_length}_{bb_mult}'))
-        main_df['ema_fast'] = ta.ema(main_df['close'], length=ema_fast_length)
-        main_df['ema_slow'] = ta.ema(main_df['close'], length=ema_slow_length)
-        main_df.dropna(inplace=True)
+        was_ma200_support = df['low'].rolling(window=20).min() < df['LT_MA200'].rolling(window=20).min() * 1.01
+        is_above_ma200 = df['close'] > df['LT_MA200']
+        condition2 = was_ma200_support & is_above_ma200
 
-        # 4. 复现策略条件 (逻辑完全不变)
-        if main_df.empty: return False
-        latest_data = main_df.iloc[-1]
+        short_term_mas = df[['ST_EMA21', 'ST_EMA30', 'ST_MA34']]
+        df['short_cv'] = short_term_mas.std(axis=1) / short_term_mas.mean(axis=1)
+        condition3 = df['short_cv'].shift(1) < 0.005
 
-        can_look_for_buy = latest_data['trend_ema_fast'] > latest_data['trend_ema_slow']
-        buySignal_BB_Break = crossover(main_df['close'], main_df[f'BBM_{bb_length}_{bb_mult}']).iloc[-1]
-        main_tf_bullish_cross = crossover(main_df['ema_fast'], main_df['ema_slow']).iloc[-1]
+        df['short_resistance'] = short_term_mas.max(axis=1)
+        condition4 = crossover(df['close'], df['short_resistance'])
+
+        df['buy_signal'] = condition1 & condition2 & condition3 & condition4
+
+        signal_dates = df.index[df['buy_signal']]
         
-        if can_look_for_buy and (buySignal_BB_Break or (latest_data['close'] > latest_data[f'BBM_{bb_length}_{bb_mult}'] and main_tf_bullish_cross)):
-            print(f"✅ BUY SIGNAL DETECTED for {ticker}")
-            return True
+        if not signal_dates.empty:
+            last_signal_date = signal_dates[-1]
+            return last_signal_date.strftime('%Y-%m-%d')
 
     except Exception as e:
-        print(f"❌ Error processing {ticker}: {e}")
+        print(f"❌ Error processing {ticker} for last signal date: {e}")
+        
+    return None
+
+# --- 升级后的扫描主函数 (无需修改) ---
+def scan_markets_for_last_signal(stock_list_path, market_type):
+    signal_results = {}
     
-    return False
+    if market_type == 'crypto':
+        data_fetch_func = get_binance_data
+    elif market_type == 'cn_stock':
+        data_fetch_func = get_tushare_data
+    else:
+        data_fetch_func = get_yfinance_data
 
-# --- 创建针对不同资产类别的 "包装器" 函数 ---
-def check_stock_signal(ticker):
-    """检查股票信号 (使用yfinance)"""
-    config = configparser.ConfigParser()
-    config.read('config.ini')
-    trend_tf_stock = config['STRATEGY']['trend_timeframe'] # '60m'
-    
-    # yfinance的时间周期字符串需要调整
-    if 'm' not in trend_tf_stock: trend_tf_stock = '60m'
-    
-    return check_signal_generic(
-        ticker,
-        main_fetch_func=lambda t: get_yfinance_data(t, period="2y", interval="1d"),
-        trend_fetch_func=lambda t: get_yfinance_data(t, period="730d", interval=trend_tf_stock)
-    )
-
-def check_crypto_signal(ticker):
-    """检查加密货币信号 (使用Binance)"""
-    config = configparser.ConfigParser()
-    config.read('config.ini')
-    trend_tf_crypto = config['CRYPTO_SETTINGS']['trend_timeframe_crypto'] # '1h'
-
-    return check_signal_generic(
-        ticker,
-        main_fetch_func=lambda t: get_binance_data(t, interval="1d", limit=500),
-        trend_fetch_func=lambda t: get_binance_data(t, interval=trend_tf_crypto, limit=1000)
-    )
-
-# --- run_market_scan现在接受一个检查函数作为参数 ---
-def run_market_scan(stock_list_path, check_function):
-    """遍历股票列表，使用指定的检查函数返回触发信号的股票"""
-    triggered_stocks = []
     with open(stock_list_path, 'r') as f:
         tickers = [line.strip() for line in f if line.strip()]
     
-    print(f"\n--- Scanning {len(tickers)} symbols from {stock_list_path} ---")
+    # 这里的 pro 已经从文件顶部导入，所以不再报错
+    if market_type == 'cn_stock' and (not tickers or not pro):
+        if not pro: print("ℹ️  Skipping A-share scan because Tushare token is not set.")
+        return {}
+
+    print(f"\n--- Scanning {len(tickers)} symbols from {stock_list_path} for last signal date ---")
     for ticker in tickers:
-        if check_function(ticker):
-            triggered_stocks.append(ticker)
-    
-    return triggered_stocks
+        last_date = find_last_buy_signal_date(ticker, data_fetch_func)
+        if last_date:
+            signal_results[ticker] = last_date
+            
+    return signal_results

@@ -1,6 +1,7 @@
-# telegram_bot.py
+# telegram_bot.py (V2.1 - with Retry Logic)
 import asyncio
 import os
+import time
 from telegram import Bot
 from telegram.constants import ParseMode
 
@@ -14,24 +15,28 @@ async def send_telegram_message_async(message_text):
     if not token or not chat_id:
         print("🔴 Telegram TOKEN or CHAT_ID not set in .env file.")
         return
+        
+    bot = Bot(token=token)
+    await bot.send_message(
+        chat_id=chat_id,
+        text=message_text,
+        parse_mode=ParseMode.MARKDOWN
+    )
 
-    try:
-        bot = Bot(token=token)
-        await bot.send_message(
-            chat_id=chat_id,
-            text=message_text,
-            parse_mode=ParseMode.MARKDOWN
-        )
-        print("📬 Telegram message sent successfully!")
-    except Exception as e:
-        print(f"🔥 Error sending Telegram message: {e}")
-
-def send_telegram_message(message_text):
+def send_telegram_message(message_text, retries=3, delay=5):
     """
-    [同步包装器] 方便在我们的主程序(main.py)中以同步方式调用。
+    [升级版] 同步包装器，增加了自动重试功能。
     """
-    try:
-        # 使用asyncio.run来执行异步函数
-        asyncio.run(send_telegram_message_async(message_text))
-    except Exception as e:
-        print(f"🔥 Error in asyncio wrapper for Telegram: {e}")
+    for i in range(retries):
+        try:
+            print(f"Attempting to send Telegram message (Attempt {i+1}/{retries})...")
+            asyncio.run(send_telegram_message_async(message_text))
+            print("📬 Telegram message sent successfully!")
+            return # 成功后直接返回
+        except Exception as e:
+            print(f"🔥 Error sending Telegram message: {e}")
+            if i < retries - 1:
+                print(f"Retrying in {delay} seconds...")
+                time.sleep(delay)
+            else:
+                print("❌ All retries failed for sending Telegram message.")
